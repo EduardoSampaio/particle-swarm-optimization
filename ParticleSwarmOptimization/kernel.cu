@@ -6,7 +6,16 @@
 #include <stdio.h>
 #include <curand.h>
 #include <curand_kernel.h>
-#include "kernel.h"
+
+#define HANDLE_ERROR( err ) ( HandleError( err, __FILE__, __LINE__ ) )
+
+static void HandleError(cudaError_t err, const char* file, int line) {
+	if (err != cudaSuccess) {
+		printf("%s in %s at line %d\n", cudaGetErrorString(err),
+			file, line);
+		exit(EXIT_FAILURE);
+	}
+}
 
 typedef struct Particle
 {
@@ -170,7 +179,7 @@ void initial_particles(const int& num_particle, const int& num_dimension, double
 int main()
 {
 	double initial[] = { 5, 5 };
-	const int num_particle = 512;
+	const int num_particle = 1024*20;
 	double h_BOUNDS[] = { -10,10,-10,10 };
 	double* BOUNDS;
 
@@ -179,7 +188,8 @@ int main()
 	Particle* swarm;
 	const int THREAD_PER_BLOCK = 128;
 	const int BLOCKS = num_particle / THREAD_PER_BLOCK;
-	const int MAX_ITER = 10;
+	const int MAX_ITER = 1;
+	const int N = 10;
 
 	cudaMallocManaged(&pos_best_g, sizeof(double) * num_dimensions);
 	cudaMallocManaged(&err_best_g, sizeof(double));
@@ -191,26 +201,23 @@ int main()
 	*err_best_g = -1;
 	initial_particles(num_particle, num_dimensions, initial, swarm);
 
-
-	float time;
-	cudaEvent_t start = cudaEvent_t();
-	cudaEvent_t stop = cudaEvent_t();
-	cudaEventCreate(&start);
-	cudaEventCreate(&stop);
-	cudaEventRecord(start, 0);
-
+	cudaStream_t stream[N];
 	for (int i = 0; i < MAX_ITER; i++) {
-		evaluate_update_pbest << <BLOCKS, THREAD_PER_BLOCK >> > (swarm);
-		update_gbest << <BLOCKS, THREAD_PER_BLOCK >> > (swarm, pos_best_g, err_best_g);
-		update_position_velocity << <BLOCKS, THREAD_PER_BLOCK >> > (swarm, BOUNDS, pos_best_g);
+		for (int j = 0; j < N; j++)
+		{
+			cudaStreamCreate(&stream[j]);
+			evaluate_update_pbest << <BLOCKS, THREAD_PER_BLOCK,0, stream[j] >> > (swarm);
+			update_gbest << <BLOCKS, THREAD_PER_BLOCK, 0, stream[j] >> > (swarm, pos_best_g, err_best_g);
+			update_position_velocity << <BLOCKS, THREAD_PER_BLOCK, 0, stream[j] >> > (swarm, BOUNDS, pos_best_g);
+			cudaDeviceSynchronize();
+			printf("Stream %i: [x:%.20f, y:% .20f] error: % .20f\n", j, pos_best_g[0], pos_best_g[1], *err_best_g);
+		}
+		cudaDeviceSynchronize();
+		printf("Iteration %d: [x:%.20f, y:% .20f] error: % .20f\n",i, pos_best_g[0], pos_best_g[1], *err_best_g);
 	}
-	
-	cudaEventRecord(stop, 0);
-	cudaEventSynchronize(stop);
 
-	cudaEventElapsedTime(&time, start, stop);
+	cudaDeviceSynchronize();
 	printf("Final Solution: [x:%.20f, y:% .20f] error: % .20f\n", pos_best_g[0], pos_best_g[1], *err_best_g);
-	printf("Time elapsed on CPU: %f ms.\n", time);
 
 	cudaFree(swarm);
 	cudaFree(pos_best_g);
