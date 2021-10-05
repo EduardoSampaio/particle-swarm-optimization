@@ -122,8 +122,6 @@ __global__ void update_position_velocity(Particle* swarm, double* bounds, double
 			swarm[i].position_i[j] = bounds[j * num_dimensions + 0];
 		}
 
-		__syncthreads();
-
 		double r1 = curand_uniform(&state);
 		double r2 = curand_uniform(&state);
 		double vel_cognitive = c1 * r1 * (swarm[i].pos_best_i[j] - swarm[i].position_i[j]);
@@ -186,9 +184,10 @@ void pso_single_swarm()
 	double* pos_best_g;
 	double* err_best_g;
 	Particle* swarm;
-	const int THREAD_PER_BLOCK = 64;
+	const int THREAD_PER_BLOCK = 128;
 	const int BLOCKS = num_particle / THREAD_PER_BLOCK;
-	const int MAX_ITER = 10;
+	const int MAX_ITER = 30;
+	const int N = 10;
 
 	cudaMallocManaged(&pos_best_g, sizeof(double) * num_dimensions);
 	cudaMallocManaged(&err_best_g, sizeof(double));
@@ -199,7 +198,6 @@ void pso_single_swarm()
 
 	*err_best_g = -1;
 	initial_particles(num_particle, num_dimensions, initial, swarm);
-
 
 	float time;
 	cudaEvent_t start = cudaEvent_t();
