@@ -198,7 +198,6 @@ int main()
 	const int THREAD_PER_BLOCK = 128;
 	const int BLOCKS = num_particle / THREAD_PER_BLOCK;
 	const int MAX_ITER = 36;
-	const int N = 4;
 
 	cudaMallocManaged(&pos_best_g, sizeof(double) * num_dimensions);
 	cudaMallocManaged(&err_best_g, sizeof(double));
@@ -210,7 +209,7 @@ int main()
 	*err_best_g = -1;
 	initial_particles(num_particle, num_dimensions, initial, swarm);
 
-	float time = 0.0, gtime = 0.0;
+	float time = 0.0;
 	cudaEvent_t start, stop;
 	cudaEventCreate(&start);
 	cudaEventCreate(&stop);
