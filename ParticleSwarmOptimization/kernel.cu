@@ -37,6 +37,11 @@ double RNG_UNIFORM(int a, int b)
 	return (a + (b - a) * RNG_RANDOM());
 }
 
+__device__ double gpuRandomNumberUniform(curandState_t state) {
+	curand_init(0, 0, 0, &state);
+	return curand_uniform(&state);
+}
+
 const int num_dimensions = 2;
 
 double BOUNDS_SPHERE[] = { -10, 10,-10, 10 };
@@ -105,9 +110,6 @@ __global__ void update_position_velocity(Particle* swarm, double* bounds, double
 	int c1 = 1;
 	int c2 = 2;
 
-	curandState_t state;
-	curand_init(0, 0, 0, &state);
-
 	for (int j = 0; j < num_dimensions; j++)
 	{
 		swarm[i].position_i[j] = swarm[i].position_i[j] + swarm[i].velocity_i[j];
@@ -122,21 +124,27 @@ __global__ void update_position_velocity(Particle* swarm, double* bounds, double
 			swarm[i].position_i[j] = bounds[j * num_dimensions + 0];
 		}
 
-		__syncthreads();
-
-		double r1 = curand_uniform(&state);
-		double r2 = curand_uniform(&state);
+		curandState_t state1, state2;
+		double r1 = gpuRandomNumberUniform(state1);
+		double r2 = gpuRandomNumberUniform(state2);
 		double vel_cognitive = c1 * r1 * (swarm[i].pos_best_i[j] - swarm[i].position_i[j]);
 		double vel_social = c2 * r2 * (pos_best_g[j] - swarm[i].position_i[j]);
 		swarm[i].velocity_i[j] = w * swarm[i].velocity_i[j] + vel_cognitive + vel_social;
 	}
 }
 
-__global__ void evaluate_update_pbest(Particle* swarm) {
+
+
+__global__ void calculate_fitness(Particle* swarm) {
 
 	int i = threadIdx.x + blockIdx.x * blockDim.x;
 	double err = sphere(&swarm[i]);
 	swarm[i].err_i = err;
+}
+
+__global__ void evaluate_update_pbest(Particle* swarm) {
+
+	int i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (swarm[i].err_i < swarm[i].err_best_i || swarm[i].err_i == -1)
 	{
 		swarm[i].pos_best_i = swarm[i].position_i;
@@ -189,8 +197,8 @@ int main()
 	Particle* swarm;
 	const int THREAD_PER_BLOCK = 128;
 	const int BLOCKS = num_particle / THREAD_PER_BLOCK;
-	const int MAX_ITER = 30;
-	const int N = 10;
+	const int MAX_ITER = 36;
+	const int N = 4;
 
 	cudaMallocManaged(&pos_best_g, sizeof(double) * num_dimensions);
 	cudaMallocManaged(&err_best_g, sizeof(double));
@@ -202,14 +210,15 @@ int main()
 	*err_best_g = -1;
 	initial_particles(num_particle, num_dimensions, initial, swarm);
 
-	float time;
-	cudaEvent_t start = cudaEvent_t();
-	cudaEvent_t stop = cudaEvent_t();
+	float time = 0.0, gtime = 0.0;
+	cudaEvent_t start, stop;
 	cudaEventCreate(&start);
 	cudaEventCreate(&stop);
 	cudaEventRecord(start, 0);
 
+
 	for (int i = 0; i < MAX_ITER; i++) {
+		calculate_fitness << <BLOCKS, THREAD_PER_BLOCK >> > (swarm);
 		evaluate_update_pbest << <BLOCKS, THREAD_PER_BLOCK >> > (swarm);
 		update_gbest << <BLOCKS, THREAD_PER_BLOCK >> > (swarm, pos_best_g, err_best_g);
 		update_position_velocity << <BLOCKS, THREAD_PER_BLOCK >> > (swarm, BOUNDS, pos_best_g);
@@ -221,6 +230,10 @@ int main()
 	cudaEventElapsedTime(&time, start, stop);
 	printf("Final Solution: [x:%.20f, y:% .20f] error: % .20f\n", pos_best_g[0], pos_best_g[1], *err_best_g);
 	printf("Time elapsed on CPU: %f ms.\n", time);
+
+	cudaEventCreate(&start);
+	cudaEventCreate(&stop);
+	cudaEventRecord(start, 0);
 
 	cudaFree(swarm);
 	cudaFree(pos_best_g);
