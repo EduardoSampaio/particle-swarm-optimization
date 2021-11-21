@@ -104,7 +104,7 @@ __global__ void update_gbest(Particle* swarm, double* pos_best_g, double* err_be
 
 __global__ void update_position_velocity(Particle* swarm, double* bounds, double* pos_best_g)
 {
-
+	
 	int i = threadIdx.x + blockIdx.x * blockDim.x;
 	double w = 0.5;
 	int c1 = 1;
@@ -113,7 +113,6 @@ __global__ void update_position_velocity(Particle* swarm, double* bounds, double
 	for (int j = 0; j < num_dimensions; j++)
 	{
 		swarm[i].position_i[j] = swarm[i].position_i[j] + swarm[i].velocity_i[j];
-
 		if (swarm[i].position_i[j] > bounds[j * num_dimensions + 1])
 		{
 			swarm[i].position_i[j] = bounds[j * num_dimensions + 1];
@@ -136,7 +135,6 @@ __global__ void update_position_velocity(Particle* swarm, double* bounds, double
 
 
 __global__ void calculate_fitness(Particle* swarm) {
-
 	int i = threadIdx.x + blockIdx.x * blockDim.x;
 	double err = sphere(&swarm[i]);
 	swarm[i].err_i = err;
@@ -152,62 +150,32 @@ __global__ void evaluate_update_pbest(Particle* swarm) {
 	}
 }
 
-void alloc_memory(Particle* particle, int num_dimensions, double* x0)
-{
-	double* velocity_i = (double*)malloc(sizeof(double) * num_dimensions);
-	double* position_i = (double*)malloc(sizeof(double) * num_dimensions);
-	double* pos_best_i = (double*)malloc(sizeof(double) * num_dimensions);
+__global__ void init_particle(Particle* swarm, double *x0) {
 
-	cudaMalloc(&particle->position_i, sizeof(double) * num_dimensions);
-	cudaMalloc(&particle->velocity_i, sizeof(double) * num_dimensions);
-	cudaMalloc(&particle->pos_best_i, sizeof(double) * num_dimensions);
-
-	for (int i = 0; i < num_dimensions; i++)
-	{
-		velocity_i[i] = RNG_UNIFORM(-1, 1);
-		position_i[i] = x0[i];
-		pos_best_i[i] = 0.0;
-	}
-
-	cudaMemcpy(particle->velocity_i, velocity_i, sizeof(double) * num_dimensions, cudaMemcpyHostToDevice);
-	cudaMemcpy(particle->position_i, velocity_i, sizeof(double) * num_dimensions, cudaMemcpyHostToDevice);
-	cudaMemcpy(particle->pos_best_i, velocity_i, sizeof(double) * num_dimensions, cudaMemcpyHostToDevice);
-}
-
-void initial_particles(const int& num_particle, const int& num_dimension, double  initial[2], Particle* swarm)
-{
-	for (int i = 0; i < num_particle; i++)
-	{
-		Particle particle, p;
-		alloc_memory(&particle, num_dimension, initial);
-		swarm[i] = particle;
+	int i = threadIdx.x + blockIdx.x * blockDim.x;
+	curandState_t state1;
+	for (int j = 0; j < num_dimensions; j++)
+	{		
+		swarm[i].position_i[j] = x0[j];
+		swarm[i].velocity_i[j] = gpuRandomNumberUniform(state1);
 	}
 }
-
 
 int main()
 {
-	double initial[] = { 5, 5 };
+	double h_initial[] = { 5, 5 };
+	double *initial;
 	const int num_particle = 4096;
 	double h_BOUNDS[] = { -10,10,-10,10 };
 	double* BOUNDS;
 
-	double* pos_best_g;
-	double* err_best_g;
-	Particle* swarm;
-	const int THREAD_PER_BLOCK = 128;
+	double* pos_best_g, * h_pos_best_g;
+	double* err_best_g, * h_err_best_g;
+	Particle* swarm, * h_swarm;
+	const int THREAD_PER_BLOCK = 64;
 	const int BLOCKS = num_particle / THREAD_PER_BLOCK;
-	const int MAX_ITER = 36;
+	const int MAX_ITER = 30;
 
-	cudaMallocManaged(&pos_best_g, sizeof(double) * num_dimensions);
-	cudaMallocManaged(&err_best_g, sizeof(double));
-	cudaMallocManaged(&swarm, sizeof(Particle) * num_particle);
-
-	cudaMalloc(&BOUNDS, sizeof(double) * num_dimensions * num_dimensions);
-	cudaMemcpy(BOUNDS, h_BOUNDS, sizeof(double) * num_dimensions * num_dimensions, cudaMemcpyHostToDevice);
-
-	*err_best_g = -1;
-	initial_particles(num_particle, num_dimensions, initial, swarm);
 
 	float time = 0.0;
 	cudaEvent_t start, stop;
@@ -216,6 +184,32 @@ int main()
 	cudaEventRecord(start, 0);
 
 
+	h_pos_best_g = (double*)malloc(sizeof(double) * num_dimensions);
+	h_err_best_g = (double*)malloc(sizeof(double));
+	h_swarm = (Particle*)malloc(sizeof(Particle) * num_particle);
+
+	cudaMalloc(&pos_best_g, sizeof(double) * num_dimensions);
+	cudaMalloc(&err_best_g, sizeof(double));
+	cudaMalloc(&swarm, sizeof(Particle) * num_particle);
+	cudaMalloc(&BOUNDS, sizeof(double) * num_dimensions * num_dimensions);
+	cudaMalloc(&initial, sizeof(double) * num_dimensions);
+
+	*h_err_best_g = -1;
+	cudaMemcpy(pos_best_g, h_pos_best_g, sizeof(double) * num_dimensions, cudaMemcpyHostToDevice);
+	cudaMemcpy(err_best_g, h_err_best_g, sizeof(double), cudaMemcpyHostToDevice);
+	cudaMemcpy(BOUNDS, h_BOUNDS, sizeof(double) * num_dimensions * num_dimensions, cudaMemcpyHostToDevice);
+	cudaMemcpy(initial, h_initial, sizeof(double) * num_dimensions, cudaMemcpyHostToDevice);
+
+	for (int i = 0; i < num_particle; i++)
+	{
+		cudaMalloc(&h_swarm[i].position_i, sizeof(double) * num_dimensions);
+		cudaMalloc(&h_swarm[i].velocity_i, sizeof(double) * num_dimensions);
+		cudaMalloc(&h_swarm[i].pos_best_i, sizeof(double) * num_dimensions);
+	}
+
+	cudaMemcpy(swarm, h_swarm, sizeof(Particle) * num_particle, cudaMemcpyHostToDevice);
+	init_particle << <BLOCKS, THREAD_PER_BLOCK >> > (swarm, initial);	
+	cudaDeviceSynchronize();
 	for (int i = 0; i < MAX_ITER; i++) {
 		calculate_fitness << <BLOCKS, THREAD_PER_BLOCK >> > (swarm);
 		evaluate_update_pbest << <BLOCKS, THREAD_PER_BLOCK >> > (swarm);
@@ -227,13 +221,10 @@ int main()
 	cudaEventSynchronize(stop);
 
 	cudaEventElapsedTime(&time, start, stop);
-	printf("Final Solution: [x:%.20f, y:% .20f] error: % .20f\n", pos_best_g[0], pos_best_g[1], *err_best_g);
-	printf("Time elapsed on CPU: %f ms.\n", time);
-
-	cudaEventCreate(&start);
-	cudaEventCreate(&stop);
-	cudaEventRecord(start, 0);
-
+	cudaMemcpy(h_pos_best_g, pos_best_g, sizeof(double) * num_dimensions, cudaMemcpyDeviceToHost);
+	cudaMemcpy(h_err_best_g, err_best_g, sizeof(double), cudaMemcpyDeviceToHost);
+	printf("Time elapsed on CPU: %3.2f ms.\n", time);
+	printf("Final Solution: [x:%.20f, y:% .20f] error: % .20f\n", h_pos_best_g[0], h_pos_best_g[1], *h_err_best_g);
 	cudaFree(swarm);
 	cudaFree(pos_best_g);
 	cudaFree(swarm);
