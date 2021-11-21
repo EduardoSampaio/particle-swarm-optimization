@@ -102,7 +102,7 @@ __global__ void update_gbest(Particle* swarm, double* pos_best_g, double* err_be
 	}
 }
 
-__global__ void update_position_velocity(Particle* swarm, double* bounds, double* pos_best_g)
+__global__ void update_position_velocity(Particle* swarm, double* bounds, double* pos_best_g, double* numbers)
 {
 	
 	int i = threadIdx.x + blockIdx.x * blockDim.x;
@@ -123,9 +123,8 @@ __global__ void update_position_velocity(Particle* swarm, double* bounds, double
 			swarm[i].position_i[j] = bounds[j * num_dimensions + 0];
 		}
 
-		curandState_t state1, state2;
-		double r1 = gpuRandomNumberUniform(state1);
-		double r2 = gpuRandomNumberUniform(state2);
+		double r1 = numbers[i];
+		double r2 = numbers[i + j];
 		double vel_cognitive = c1 * r1 * (swarm[i].pos_best_i[j] - swarm[i].position_i[j]);
 		double vel_social = c2 * r2 * (pos_best_g[j] - swarm[i].position_i[j]);
 		swarm[i].velocity_i[j] = w * swarm[i].velocity_i[j] + vel_cognitive + vel_social;
@@ -150,15 +149,22 @@ __global__ void evaluate_update_pbest(Particle* swarm) {
 	}
 }
 
-__global__ void init_particle(Particle* swarm, double *x0) {
+__global__ void init_particle(Particle* swarm, double *x0, double* numbers) {
 
 	int i = threadIdx.x + blockIdx.x * blockDim.x;
-	curandState_t state1;
 	for (int j = 0; j < num_dimensions; j++)
 	{		
 		swarm[i].position_i[j] = x0[j];
-		swarm[i].velocity_i[j] = gpuRandomNumberUniform(state1);
+		swarm[i].velocity_i[j] = numbers[i+j];
 	}
+}
+
+__global__ void gpuGenerateRand(double *numbers) {
+	int i = threadIdx.x + blockIdx.x * blockDim.x;
+	curandState_t state;
+	curand_init(0, 0, i, &state);
+	double number = curand_uniform(&state);
+	numbers[i] = number;
 }
 
 int main()
@@ -168,14 +174,14 @@ int main()
 	const int num_particle = 4096;
 	double h_BOUNDS[] = { -10,10,-10,10 };
 	double* BOUNDS;
+	double* numbersRand;
 
 	double* pos_best_g, * h_pos_best_g;
 	double* err_best_g, * h_err_best_g;
 	Particle* swarm, * h_swarm;
-	const int THREAD_PER_BLOCK = 64;
+	const int THREAD_PER_BLOCK = 128;
 	const int BLOCKS = num_particle / THREAD_PER_BLOCK;
 	const int MAX_ITER = 30;
-
 
 	float time = 0.0;
 	cudaEvent_t start, stop;
@@ -183,16 +189,15 @@ int main()
 	cudaEventCreate(&stop);
 	cudaEventRecord(start, 0);
 
-
 	h_pos_best_g = (double*)malloc(sizeof(double) * num_dimensions);
 	h_err_best_g = (double*)malloc(sizeof(double));
 	h_swarm = (Particle*)malloc(sizeof(Particle) * num_particle);
-
 	cudaMalloc(&pos_best_g, sizeof(double) * num_dimensions);
 	cudaMalloc(&err_best_g, sizeof(double));
 	cudaMalloc(&swarm, sizeof(Particle) * num_particle);
 	cudaMalloc(&BOUNDS, sizeof(double) * num_dimensions * num_dimensions);
 	cudaMalloc(&initial, sizeof(double) * num_dimensions);
+	cudaMalloc(&numbersRand, sizeof(double) * num_dimensions * num_particle);
 
 	*h_err_best_g = -1;
 	cudaMemcpy(pos_best_g, h_pos_best_g, sizeof(double) * num_dimensions, cudaMemcpyHostToDevice);
@@ -208,13 +213,14 @@ int main()
 	}
 
 	cudaMemcpy(swarm, h_swarm, sizeof(Particle) * num_particle, cudaMemcpyHostToDevice);
-	init_particle << <BLOCKS, THREAD_PER_BLOCK >> > (swarm, initial);	
-	cudaDeviceSynchronize();
+	gpuGenerateRand<<<BLOCKS, THREAD_PER_BLOCK>>>(numbersRand);
+	init_particle << <BLOCKS, THREAD_PER_BLOCK >> > (swarm, initial, numbersRand);
+
 	for (int i = 0; i < MAX_ITER; i++) {
 		calculate_fitness << <BLOCKS, THREAD_PER_BLOCK >> > (swarm);
 		evaluate_update_pbest << <BLOCKS, THREAD_PER_BLOCK >> > (swarm);
 		update_gbest << <BLOCKS, THREAD_PER_BLOCK >> > (swarm, pos_best_g, err_best_g);
-		update_position_velocity << <BLOCKS, THREAD_PER_BLOCK >> > (swarm, BOUNDS, pos_best_g);
+		update_position_velocity << <BLOCKS, THREAD_PER_BLOCK >> > (swarm, BOUNDS, pos_best_g, numbersRand);
 	}
 
 	cudaEventRecord(stop, 0);
